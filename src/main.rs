@@ -15,9 +15,15 @@ use std::{
 const BLOCK_SITES_PATH: &str = "block_sites.txt";
 
 fn load_block_sites() -> Result<Vec<String>, std::io::Error> {
-    let input_file = fs::read_to_string(BLOCK_SITES_PATH)?;
-
-    Ok(input_file.lines().map(String::from).collect())
+    let contents = fs::read_to_string(BLOCK_SITES_PATH)?;
+    
+    let non_empty_lines: Vec<String> = contents
+        .lines()
+        .map(|line| line.to_string())
+        .filter(|line| !line.trim().is_empty()) // Skips both visually empty and whitespace-only lines
+        .collect();
+    
+    Ok(non_empty_lines)
 }
 
 fn execute_command(cmd: &mut Command) {

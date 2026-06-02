@@ -1,4 +1,4 @@
-127.0.0.1 claude.ai
-127.0.0.1 chatgpt.com
-127.0.0.1 gemini.google.com
+claude.ai
+chatgpt.com
+gemini.google.com
 

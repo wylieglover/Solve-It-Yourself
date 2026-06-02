@@ -1,102 +1,27 @@
-use std::fs::File;
-use std::io::{BufWriter, Write};
-use std::path::PathBuf;
-use std::{
-    io::{BufRead, BufReader, Seek, SeekFrom},
-    thread::sleep,
-    time::{Duration, SystemTime},
-};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use ctrlc;
-use std::process::Command;
+use std::{
+    collections::HashMap,
+    fs,
+    net::ToSocketAddrs,
+    process::Command,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::sleep,
+    time::{Duration, Instant},
+};
 
 const BLOCK_SITES_PATH: &str = "block_sites.txt";
 
-const HOST_FILE_PATH: &str = "/mnt/c/Windows/System32/drivers/etc/hosts";
+fn load_block_sites() -> Result<Vec<String>, std::io::Error> {
+    let input_file = fs::read_to_string(BLOCK_SITES_PATH)?;
 
-fn open_hosts_file() -> Result<File, std::io::Error> {
-    let mut path = PathBuf::new();
-    path.push(HOST_FILE_PATH);
-
-    Ok(File::options().read(true).append(true).open(path)?)
+    Ok(input_file.lines().map(String::from).collect())
 }
 
-fn get_reader_for_block_sites_file(
-) -> Result<BufReader<File>, std::io::Error> {
-    let input_file = File::open(BLOCK_SITES_PATH)?;
-    let block_sites_reader = BufReader::new(input_file);
-    Ok(block_sites_reader)
-}
-
-fn get_reader_for_hosts_file(host_file: &File) -> Result<BufReader<&File>, std::io::Error> {
-    let host_reader = BufReader::new(host_file);
-    Ok(host_reader)
-}
-
-fn get_writer_for_hosts_file(host_file: &File) -> Result<BufWriter<&File>, std::io::Error> {
-    let host_writer = BufWriter::new(host_file);
-    Ok(host_writer)
-}
-
-fn block_ai_sites(
-    block_sites_reader: &mut BufReader<File>,
-    host_file_writer: &mut BufWriter<&File>,
-) -> Result<(), std::io::Error> {
-    let mut line = String::new();
-
-    while block_sites_reader.read_line(&mut line)? > 0 {
-        host_file_writer.write_all(line.as_bytes())?;
-        line.clear();
-    }
-
-    host_file_writer.flush()?;
-
-    Ok(())
-}
-
-fn get_host_file_contents(
-    mut host_file_reader: BufReader<&File>,
-) -> Result<Vec<String>, std::io::Error> {
-    host_file_reader.seek(SeekFrom::Start(0))?;
-    
-    let mut host_file_contents: Vec<String> = Vec::new();
-    for line in host_file_reader.lines() {
-        let line = line?;
-        host_file_contents.push(line);
-    }
-
-    Ok(host_file_contents)
-}
-
-fn unblock_ai_sites(
-    block_sites_reader: &mut BufReader<File>,
-    host_file_contents: Vec<String>,
-) -> Result<(), std::io::Error> {
-    block_sites_reader.seek(SeekFrom::Start(0))?;
-    
-    let mut block_sites_content: Vec<String> = Vec::new();
-
-    for line in block_sites_reader.lines() {
-        let line = line?;
-        block_sites_content.push(line);
-    }
-
-    let file_contents = host_file_contents
-        .iter()
-        .map(|s| s.to_string())
-        .filter(|line| !block_sites_content.contains(line))
-        .collect::<Vec<String>>()
-        .join("\n");
-
-    std::fs::write(HOST_FILE_PATH, file_contents)?;
-    Ok(())
-}
-
-
-fn cmd_status(mut cmd: Command) {
-    let status = cmd.status()
-        .expect("Failed to execute command");
+fn execute_command(cmd: &mut Command) {
+    let status = cmd.status().expect("Failed to execute command");
 
     if status.success() {
         println!("Command finished successfully.");
@@ -104,24 +29,59 @@ fn cmd_status(mut cmd: Command) {
         eprintln!("Command failed with exit code: {:?}", status.code());
     }
 }
-fn execute_ipconfig_flush() {
-    let mut cmd = Command::new("ipconfig.exe");
-    cmd.arg("/flushdns");
 
-    cmd_status(cmd);
+fn add_firewall_rules(hostname_to_ips: &HashMap<String, Vec<String>>) {
+    for (name, ips) in hostname_to_ips {
+        for ip in ips {
+            let mut cmd = Command::new("netsh.exe");
+            cmd.args([
+                "advfirewall",
+                "firewall",
+                "add",
+                "rule",
+                &format!("name={}", name),
+                "dir=out",
+                "action=block",
+                &format!("remoteip={}", ip),
+            ]);
+            execute_command(&mut cmd);
+        }
+    }
 }
 
-fn execute_taskkill_on_chrome() {
-    let mut cmd = Command::new("taskkill.exe");
-    cmd.arg("/F"); // Forcefully kills the processes
-    cmd.arg("/IM"); // Targets all instances of the Chrome executable
-    cmd.arg("chrome.exe"); // Target (Chrome executable)
-    cmd.arg("/T"); // Kills the process along with any associated child processes
-
-    cmd_status(cmd);
+fn delete_firewall_rules(hostname_to_ips: HashMap<String, Vec<String>>) {
+    for (name, _) in hostname_to_ips.iter() {
+        let mut cmd = Command::new("netsh.exe");
+        cmd.args([
+            "advfirewall",
+            "firewall",
+            "delete",
+            "rule",
+            &format!("name={name}"),
+        ]);
+        execute_command(&mut cmd);
+    }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn resolve_hostnames(host_names: Vec<String>) -> HashMap<String, Vec<String>> {
+    let mut hostname_to_ips: HashMap<String, Vec<String>> = HashMap::new();
+
+    for host in host_names {
+        let host = format!("{}:0", host);
+        match host.to_socket_addrs() {
+            Ok(addrs) => {
+                let ips: Vec<String> = addrs.map(|addr| addr.ip().to_string()).collect();
+
+                hostname_to_ips.insert(host, ips);
+            }
+            Err(e) => eprintln!("Resolution failed: {}", e),
+        }
+    }
+
+    hostname_to_ips
+}
+
+fn setup_ctrl_c_handler() -> Arc<AtomicBool> {
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
 
@@ -131,27 +91,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .expect("Error setting Ctrl-C handler");
 
-    let current_time = SystemTime::now();
+    running
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let running = setup_ctrl_c_handler();
+
+    let start_time = Instant::now();
     let end_time = Duration::from_mins(20);
 
-    let host_file = open_hosts_file()?;
-    let mut block_sites_reader = get_reader_for_block_sites_file()?;
-    let mut host_file_writer = get_writer_for_hosts_file(&host_file)?;
+    let block_sites = load_block_sites()?;
+    let hostname_to_ips = resolve_hostnames(block_sites);
 
-    block_ai_sites(&mut block_sites_reader, &mut host_file_writer)?;
-    execute_ipconfig_flush();
-    execute_taskkill_on_chrome();
+    println!("Blocking sites on firewall...");
+    add_firewall_rules(&hostname_to_ips);
 
-    while running.load(Ordering::SeqCst) && current_time.elapsed()? < end_time {
+    while running.load(Ordering::SeqCst) && start_time.elapsed() < end_time {
         sleep(Duration::from_secs(1));
     }
 
-    print!("Cleaning up host file...");
+    println!("Timer ended or Ctrl+C caught. Removing firewall rules...");
+    delete_firewall_rules(hostname_to_ips);
 
-    let host_file_reader = get_reader_for_hosts_file(&host_file)?;
-    let host_file_contents = get_host_file_contents(host_file_reader)?;
-
-    unblock_ai_sites(&mut block_sites_reader, host_file_contents)?;
-    
     Ok(())
 }

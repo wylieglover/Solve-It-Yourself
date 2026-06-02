@@ -67,8 +67,8 @@ fn resolve_hostnames(host_names: Vec<String>) -> HashMap<String, Vec<String>> {
     let mut hostname_to_ips: HashMap<String, Vec<String>> = HashMap::new();
 
     for host in host_names {
-        let host = format!("{}:0", host);
-        match host.to_socket_addrs() {
+        let host_with_port = format!("{}:0", host);
+        match host_with_port.to_socket_addrs() {
             Ok(addrs) => {
                 let ips: Vec<String> = addrs.map(|addr| addr.ip().to_string()).collect();
 

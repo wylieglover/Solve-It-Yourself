@@ -2,6 +2,10 @@
 name = "solve_it_yourself"
 version = "2.0.0"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 ctrlc = "3.5.2"
+
+[build-dependencies]
+embed-resource = "2"
